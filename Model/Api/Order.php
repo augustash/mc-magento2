@@ -43,10 +43,6 @@ class Order
      */
     protected $_orderCollectionFactory;
     /**
-     * @var \Magento\Framework\Stdlib\DateTime\DateTime
-     */
-    protected $_date;
-    /**
      * @var Product
      */
     protected $_apiProduct;
@@ -59,9 +55,9 @@ class Order
      */
     protected $_apiCustomer;
     /**
-     * @var \Magento\Directory\Api\CountryInformationAcquirerInterface
+     * @var \Magento\Directory\Model\CountryFactory
      */
-    protected $_countryInformation;
+    protected $_countryFactory;
     /**
      * @var \Magento\Catalog\Model\ProductFactory
      */
@@ -82,23 +78,23 @@ class Order
      * @param \Magento\Sales\Model\OrderRepository $order
      * @param \Magento\Sales\Model\ResourceModel\Order\CollectionFactory $orderCollectionFactory
      * @param \Magento\Catalog\Model\ResourceModel\Product $product
-     * @param \Magento\Framework\Stdlib\DateTime\DateTime $date
      * @param Product $apiProduct
      * @param Customer $apiCustomer
      * @param \Magento\Catalog\Model\ProductFactory $productFactory
-     * @param \Magento\Directory\Api\CountryInformationAcquirerInterface $countryInformation
+     * @param \Magento\Directory\Model\CountryFactory $countryFactory
      * @param \Ebizmarts\MailChimp\Model\MailChimpSyncEcommerce $chimpSyncEcommerce
+     * @param \Magento\Framework\Url $urlHelper
+     * @throws \Magento\Framework\Exception\LocalizedException
      */
     public function __construct(
         \Ebizmarts\MailChimp\Helper\Data $helper,
         \Magento\Sales\Model\OrderRepository $order,
         \Magento\Sales\Model\ResourceModel\Order\CollectionFactory $orderCollectionFactory,
         \Magento\Catalog\Model\ResourceModel\Product $product,
-        \Magento\Framework\Stdlib\DateTime\DateTime $date,
         \Ebizmarts\MailChimp\Model\Api\Product $apiProduct,
         \Ebizmarts\MailChimp\Model\Api\Customer $apiCustomer,
         \Magento\Catalog\Model\ProductFactory $productFactory,
-        \Magento\Directory\Api\CountryInformationAcquirerInterface $countryInformation,
+        \Magento\Directory\Model\CountryFactory $countryFactory,
         \Ebizmarts\MailChimp\Model\MailChimpSyncEcommerce $chimpSyncEcommerce,
         \Magento\Framework\Url $urlHelper
     ) {
@@ -106,14 +102,13 @@ class Order
         $this->_helper          = $helper;
         $this->_order           = $order;
         $this->_orderCollectionFactory = $orderCollectionFactory;
-        $this->_date            = $date;
         $this->_apiProduct      = $apiProduct;
         $this->_productFactory   = $productFactory;
         $this->_product         = $product;
         $this->_apiCustomer     = $apiCustomer;
-        $this->_countryInformation  = $countryInformation;
+        $this->_countryFactory  = $countryFactory;
         $this->_chimpSyncEcommerce  = $chimpSyncEcommerce;
-        $this->_batchId         = \Ebizmarts\MailChimp\Helper\Data::IS_ORDER. '_' . $this->_date->gmtTimestamp();
+        $this->_batchId         = \Ebizmarts\MailChimp\Helper\Data::IS_ORDER. '_' . $this->_helper->getGmtTimeStamp();
         $this->_firstDate = $this->_helper->getConfigValue(\Ebizmarts\MailChimp\Helper\Data::XML_ECOMMERCE_FIRSTDATE);
         $this->_counter = 0;
         $this->_urlHelper    = $urlHelper;
@@ -149,7 +144,7 @@ class Order
         $modifiedOrders->addFieldToFilter('store_id', ['eq' => $magentoStoreId]);
         //join with mailchimp_ecommerce_sync_data table to filter by sync data.
         $modifiedOrders->getSelect()->joinLeft(
-            ['m4m' => 'mailchimp_sync_ecommerce'],
+            ['m4m' => $this->_helper->getTableName('mailchimp_sync_ecommerce')],
             "m4m.related_id = main_table.entity_id and m4m.type = '".\Ebizmarts\MailChimp\Helper\Data::IS_ORDER.
             "' and m4m.mailchimp_store_id = '".$mailchimpStoreId."'",
             ['m4m.*']
@@ -167,7 +162,13 @@ class Order
                 $orderId = $item->getEntityId();
                 $order = $this->_order->get($orderId);
                 //create missing products first
-                $productData = $this->_apiProduct->sendModifiedProduct($order, $mailchimpStoreId, $magentoStoreId);
+                try {
+                    $productData = $this->_apiProduct->sendModifiedProduct($order, $mailchimpStoreId, $magentoStoreId);
+                } catch(\Exception $e) {
+                    $error = $e->getMessage();
+                    $this->_updateOrder($mailchimpStoreId, $orderId, $this->_helper->getGmtDate(), $error, 0);
+                    continue;
+                }
                 if (count($productData)) {
                     foreach ($productData as $p) {
                         $batchArray[$this->_counter] = $p;
@@ -178,17 +179,17 @@ class Order
                 $orderJson = $this->GeneratePOSTPayload($order, $mailchimpStoreId, $magentoStoreId, true);
                 if (!empty($orderJson)) {
                     $batchArray[$this->_counter]['method'] = "PATCH";
-                    $batchArray[$this->_counter]['path'] = '/ecommerce/stores/' . $mailchimpStoreId . '/orders/' . $orderId;
+                    $batchArray[$this->_counter]['path'] = '/ecommerce/stores/' . $mailchimpStoreId . '/orders/' . $order->getIncrementId();
                     $batchArray[$this->_counter]['operation_id'] = $this->_batchId . '_' . $orderId;
                     $batchArray[$this->_counter]['body'] = $orderJson;
                 } else {
-                    $error = $this->_helper->__('Something went wrong when retreiving product information.');
-                    $this->_updateOrder($mailchimpStoreId, $orderId, $this->_date->gmtDate(), $error, 0);
+                    $error = __('Something went wrong when retreiving product information.');
+                    $this->_updateOrder($mailchimpStoreId, $orderId, $this->_helper->getGmtDate(), $error, 0);
                     continue;
                 }
 
                 //update order delta
-                $this->_updateOrder($mailchimpStoreId, $orderId, $this->_date->gmtDate(), $error, 0);
+                $this->_updateOrder($mailchimpStoreId, $orderId);
                 $this->_counter++;
             } catch (Exception $e) {
                 $this->_helper->log($e->getMessage());
@@ -210,7 +211,7 @@ class Order
             $newOrders->addFieldToFilter('created_at', ['gt' => $this->_firstDate]);
         }
         $newOrders->getSelect()->joinLeft(
-            ['m4m' => 'mailchimp_sync_ecommerce'],
+            ['m4m' => $this->_helper->getTableName('mailchimp_sync_ecommerce')],
             "m4m.related_id = main_table.entity_id and m4m.type = '".\Ebizmarts\MailChimp\Helper\Data::IS_ORDER.
             "' and m4m.mailchimp_store_id = '".$mailchimpStoreId."'",
             ['m4m.*']
@@ -229,7 +230,13 @@ class Order
                 $orderId = $item->getEntityId();
                 $order = $this->_order->get($orderId);
                 //create missing products first
-                $productData = $this->_apiProduct->sendModifiedProduct($order, $mailchimpStoreId, $magentoStoreId);
+                try {
+                    $productData = $this->_apiProduct->sendModifiedProduct($order, $mailchimpStoreId, $magentoStoreId);
+                } catch(\Exception $e) {
+                    $error = $e->getMessage();
+                    $this->_updateOrder($mailchimpStoreId, $orderId, $this->_helper->getGmtDate(), $error, 0);
+                    continue;
+                }
                 if (count($productData)) {
                     foreach ($productData as $p) {
                         $batchArray[$this->_counter] = $p;
@@ -248,7 +255,7 @@ class Order
                 }
 
                 //update order delta
-                $this->_updateOrder($mailchimpStoreId, $orderId, $this->_date->gmtDate(), $error, 0);
+                $this->_updateOrder($mailchimpStoreId, $orderId);
                 $this->_counter++;
             } catch (Exception $e) {
                 $this->_helper->log($e->getMessage());
@@ -340,7 +347,7 @@ class Order
                 $itemCount++;
                 $data["lines"][] = [
                     "id" => (string)$itemCount,
-                    "product_id" => $item->getProductId(),
+                    "product_id" => $variant,
                     "product_variant_id" => $variant,
                     "quantity" => (int)$item->getQtyOrdered(),
                     "price" => $item->getPrice(),
@@ -453,11 +460,13 @@ class Order
             $data['billing_address']["postal_code"] = $billingAddress->getPostcode();
         }
 
-        if ($billingAddress->getCountry()) {
-            $country = $this->_countryInformation->getCountryInfo($billingAddress->getCountryId());
-            $countryName = $country->getFullNameLocale();
-            $address["country"] =$data['billing_address']['country'] = $countryName;
-            $address["country_code"] = $data['billing_address']['country_code'] = $country->getTwoLetterAbbreviation();
+        if ($billingAddress->getCountryId()) {
+            /**
+             * @var $country \Magento\Directory\Model\Country
+             */
+            $country = $this->_countryFactory->create()->loadByCode($billingAddress->getCountryId());
+            $address["country"] = $data['billing_address']['country'] = $country->getName();
+            $address["country_code"] = $data['billing_address']['country_code'] = $billingAddress->getCountryId();
         }
         if (count($address)) {
             $data["customer"]["address"] = $address;
@@ -504,15 +513,13 @@ class Order
             }
 
             if ($shippingAddress->getCountryId()) {
-                $country = $this->_countryInformation->getCountryInfo($shippingAddress->getCountryId());
-                $countryName = $country->getFullNameLocale();
-                $data['shipping_address']['country'] = $countryName;
-                $data['shipping_address']['country_code'] = $country->getTwoLetterAbbreviation();
+                /**
+                 * @var $country \Magento\Directory\Model\Country
+                 */
+                $country = $this->_countryFactory->create()->loadByCode($shippingAddress->getCountryId());
+                $data['shipping_address']["country"] = $country->getName();
+                $data['shipping_address']["country_code"] = $shippingAddress->getCountryId();
             }
-
-//            if ($shippingAddress->getCompamy()) {
-//                $data["shipping_address"]["company"] = $shippingAddress->getCompany();
-//            }
         }
         //customer orders data
         $orderCollection = $this->_orderCollectionFactory->create();
@@ -638,15 +645,15 @@ class Order
 //        return $this->_api;
 //    }
 
-    protected function _updateOrder($storeId, $entityId, $sync_delta, $sync_error, $sync_modified)
+    protected function _updateOrder($storeId, $entityId, $sync_delta = null, $sync_error=null, $sync_modified=null)
     {
         $this->_helper->saveEcommerceData(
             $storeId,
             $entityId,
+            \Ebizmarts\MailChimp\Helper\Data::IS_ORDER,
             $sync_delta,
             $sync_error,
-            $sync_modified,
-            \Ebizmarts\MailChimp\Helper\Data::IS_ORDER
+            $sync_modified
         );
     }
 }

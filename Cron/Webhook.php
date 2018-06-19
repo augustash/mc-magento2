@@ -198,8 +198,14 @@ class Webhook
                 /**
                  * @todo change the merge vars
                  */
-                $customer->setFirstname($fname);
-                $customer->setLastname($lname);
+                $fname = trim($fname);
+                $lname = trim($lname);
+                if ($fname != "") {
+                    $customer->setFirstname($fname);
+                }
+                if ($lname != "") {
+                    $customer->setLastname($lname);
+                }
                 $customer->getResource()->save($customer);
             }
         } else {
@@ -210,7 +216,7 @@ class Webhook
 
                 $stores = $this->_helper->getMagentoStoreIdsByListId($listId);
                 if (count($stores)) {
-                    $subscriber->setStreId($stores[0]);
+                    $subscriber->setStoreId($stores[0]);
                     $api = $this->_helper->getApi($stores[0]);
                     $member =$api->lists->members->get($listId, md5(strtolower($email)));
                     if ($member) {
