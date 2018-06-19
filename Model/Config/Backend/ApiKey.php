@@ -77,6 +77,8 @@ class ApiKey extends \Magento\Framework\App\Config\Value
             $active = $data['ecommerce']['fields']['active']['value'];
         } elseif ($data['ecommerce']['fields']['active']['inherit']) {
             $active = $data['ecommerce']['fields']['active']['inherit'];
+        } else {
+            $active = 0;
         }
         if ($active && $this->isValueChanged()) {
             $mailchimpStore = $this->_helper->getConfigValue(\Ebizmarts\MailChimp\Helper\Data::XML_MAILCHIMP_STORE, $generalData['scope_id']);
